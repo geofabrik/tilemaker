@@ -47,6 +47,7 @@
 #include "shared_data.h"
 #include "read_pbf.h"
 #include "read_shp.h"
+#include "tile_expiry_list.h"
 #include "tile_worker.h"
 #include "osm_mem_tiles.h"
 #include "shp_mem_tiles.h"
@@ -164,6 +165,7 @@ int main(int argc, char* argv[]) {
 	// ----	Read command-line options
 	vector<string> inputFiles;
 	string luaFile;
+	string tileListFile;
 	string osmStoreFile;
 	string jsonFile;
 	uint threadNum;
@@ -180,6 +182,7 @@ int main(int argc, char* argv[]) {
 		("merge"  ,po::bool_switch(&mergeSqlite),                                "merge with existing .mbtiles (overwrites otherwise)")
 		("config", po::value< string >(&jsonFile)->default_value("config.json"), "config JSON file")
 		("process",po::value< string >(&luaFile)->default_value("process.lua"),  "tag-processing Lua file")
+		("expired",po::value< string >(&tileListFile),                       "file containing a list of tiles to be produced")
 		("store",  po::value< string >(&osmStoreFile),  "temporary storage for node/ways/relations data")
 		("compact",po::bool_switch(&osmStoreCompact),  "Reduce overall memory usage (compact mode).\nNOTE: This requires the input to be renumbered (osmium renumber)")
 		("verbose",po::bool_switch(&_verbose),                                   "verbose error output")
@@ -211,6 +214,10 @@ int main(int argc, char* argv[]) {
 	
 	if (!boost::filesystem::exists(jsonFile)) { cerr << "Couldn't open .json config: " << jsonFile << endl; return -1; }
 	if (!boost::filesystem::exists(luaFile )) { cerr << "Couldn't open .lua script: "  << luaFile  << endl; return -1; }
+	if (!tileListFile.empty() && !boost::filesystem::exists(tileListFile )) {
+		cerr << "Couldn't open tile list file: "  << tileListFile  << endl;
+		return -1;
+	}
 
 	// ---- Remove existing .mbtiles if it exists
 
@@ -276,6 +283,10 @@ int main(int argc, char* argv[]) {
 		cout << "Bounding box " << clippingBox.min_corner().x() << ", " << latp2lat(clippingBox.min_corner().y()) << ", " << 
 		                           clippingBox.max_corner().x() << ", " << latp2lat(clippingBox.max_corner().y()) << endl;
 	}
+
+	// Read tile list file
+	TileExpiryList tileExpList {config.baseZoom, !tileListFile.empty()};
+	tileExpList.readListFromFile(tileListFile.c_str());
 
 	// For each tile, objects to be used in processing
 	OSMStore osmStore;
@@ -429,6 +440,7 @@ int main(int argc, char* argv[]) {
 		std::deque< std::pair<unsigned int, TileCoordinates> > tile_coordinates;
 		for (uint zoom=sharedData.config.startZoom; zoom<=sharedData.config.endZoom; zoom++) {
 			auto zoom_result = GetTileCoordinates(sources, zoom);
+			TileExpiryList tileListAtZoom (zoom, tileExpList.isEnabled(), std::move(tileExpList.clone_at_zoom(zoom)));
 			for(auto&& it: zoom_result) {
 				// If we're constrained to a source tile, check we're within it
 				if (srcZ>-1) {
@@ -441,8 +453,9 @@ int main(int argc, char* argv[]) {
 					if(!boost::geometry::intersects(TileBbox(it, zoom).getTileBox(), clippingBox)) 
 						continue;
 				}
-
-				tile_coordinates.push_back(std::make_pair(zoom, it));
+				if (tileListAtZoom.contains(it)) {
+					tile_coordinates.push_back(std::make_pair(zoom, it));
+				}
 			}
 		}
 

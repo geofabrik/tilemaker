@@ -95,6 +95,7 @@ file(GLOB tilemaker_src_files
 	src/read_pbf.cpp
 	src/shared_data.cpp
 	src/tile_data.cpp
+	src/tile_expiry_list.cpp
 	src/tile_worker.cpp
 	src/coordinates.cpp
 	src/helpers.cpp
